@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# 환경변수
+.env
+
+# 모델 가중치 / 큰 바이너리 파일 (Drive에서 별도 관리)
+artifacts/*.pt
+artifacts/*.model
+artifacts/*.vocab
+
+# 데이터 (용량 크거나 원본 보존 불필요)
+data/*.txt
+data/*.csv
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
