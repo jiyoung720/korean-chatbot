@@ -9,14 +9,17 @@ venv/
 # 환경변수
 .env
 
-# 모델 가중치 / 큰 바이너리 파일 (Drive에서 별도 관리)
+# 모델 가중치 / 토크나이저 / 큰 바이너리 (모든 하위 경로 포함)
+artifacts/**/*.pt
+artifacts/**/*.model
+artifacts/**/*.vocab
 artifacts/*.pt
 artifacts/*.model
 artifacts/*.vocab
 
-# 데이터 (용량 크거나 원본 보존 불필요)
-data/*.txt
-data/*.csv
+# 데이터 원본/가공본 (모든 하위 경로 포함)
+data/raw/
+data/processed/
 
 # OS
 .DS_Store
