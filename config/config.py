@@ -3,17 +3,33 @@ import os
 # 프로젝트 루트 기준 경로
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ARTIFACTS_DIR = os.path.join(BASE_DIR, "artifacts")
+TOKENIZER_DIR = os.path.join(ARTIFACTS_DIR, "tokenizer")
 
-# 모델 가중치 / 토크나이저 파일 경로
-MODEL_PATH = os.path.join(ARTIFACTS_DIR, "gpt_mini_latest.pt")
-TOKENIZER_PATH = os.path.join(ARTIFACTS_DIR, "ko_sp_16k.model")
+# 모델별 설정 (학습 시 사용한 값과 반드시 동일해야 함)
+MODELS = {
+    "wiki": {
+        "model_path": os.path.join(ARTIFACTS_DIR, "gpt_wiki_latest.pt"),
+        "tokenizer_path": os.path.join(TOKENIZER_DIR, "ko_sp_wiki_16k.model"),
+        "embed_dim": 384,
+        "num_heads": 6,
+        "ff_dim": 1536,
+        "num_layers": 6,
+        "max_seq_len": 256,
+        "eos_token": "<eos>",  # 위키 모델은 표준 EOS 사용
+    },
+    "dialog": {
+        "model_path": os.path.join(ARTIFACTS_DIR, "gpt_dialog_latest.pt"),
+        "tokenizer_path": os.path.join(TOKENIZER_DIR, "ko_sp_dialog_16k.model"),
+        "embed_dim": 384,
+        "num_heads": 6,
+        "ff_dim": 1536,
+        "num_layers": 6,
+        "max_seq_len": 128,
+        "eos_token": "<eot>",  # 대화 모델은 대화 종료 토큰을 생성 종료 신호로 사용
+    },
+}
 
-# 모델 하이퍼파라미터 (학습 시 사용한 값과 반드시 동일해야 함)
-EMBED_DIM = 384
-NUM_HEADS = 6
-FF_DIM = 1536
-NUM_LAYERS = 6
-MAX_SEQ_LEN = 256
+DEFAULT_MODEL = "dialog"  # /chat 요청에서 model을 지정하지 않으면 사용할 기본값
 
 # 생성 옵션 기본값
 DEFAULT_MAX_NEW_TOKENS = 50

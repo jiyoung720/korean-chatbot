@@ -2,9 +2,10 @@ import sentencepiece as spm
 
 
 class KoreanTokenizer:
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, eos_token: str = "<eos>"):
         self.sp = spm.SentencePieceProcessor()
         self.sp.load(model_path)
+        self._eos_id = self.sp.piece_to_id(eos_token)
 
     def encode(self, text: str) -> list[int]:
         return self.sp.encode(text, out_type=int)
@@ -18,7 +19,7 @@ class KoreanTokenizer:
 
     @property
     def eos_id(self) -> int:
-        return self.sp.eos_id()
+        return self._eos_id
 
     @property
     def pad_id(self) -> int:

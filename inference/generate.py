@@ -24,7 +24,12 @@ def generate(model, tokenizer, prompt, max_new_tokens=50, temperature=0.8, top_k
         sampled_idx = torch.multinomial(probs, num_samples=1)
         next_token = top_k_indices.gather(-1, sampled_idx)
 
-        if next_token.item() == tokenizer.eos_id:
+        # 디버그 출력
+        next_token_id = next_token.item()
+        print("generated:", tokenizer.sp.id_to_piece(next_token_id))
+
+        if next_token_id == tokenizer.eos_id:
+            print("EOS DETECTED")
             break
 
         input_ids = torch.cat([input_ids, next_token], dim=1)
