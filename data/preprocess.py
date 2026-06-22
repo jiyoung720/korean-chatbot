@@ -22,12 +22,10 @@ def parse_dialog(txt_path: Path) -> list[tuple[str, str]]:
             m = re.match(r"^\s*(\d+)\s*:\s*(.*)$", line)
             if m:
                 speaker_id, utterance = m.group(1), m.group(2).strip()
-
                 utterance = replace_masks(utterance)
-
                 if utterance:
                     lines.append((speaker_id, utterance))
-                    return lines
+    return lines
 
 
 def normalize_speakers(dialog: list[tuple[str, str]]) -> list[tuple[int, str]]:

@@ -24,7 +24,7 @@ MODELS = {
         "num_heads": 6,
         "ff_dim": 1536,
         "num_layers": 6,
-        "max_seq_len": 128,
+        "max_seq_len": 256,
         "eos_token": "<eot>",  # 대화 모델은 대화 종료 토큰을 생성 종료 신호로 사용
     },
 }
