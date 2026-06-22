@@ -26,3 +26,7 @@ data/processed/
 
 # IDE
 .vscode/
+artifacts/rag/
+# 추가 데이터/캐시 (RAG 코퍼스, 임베딩 캐시)
+data/*.txt
+artifacts/rag/
