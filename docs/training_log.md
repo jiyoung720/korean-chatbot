@@ -268,11 +268,118 @@ Wiki 모델은 "박정희", "김영삼" 같은 실제 정치인 이름과
 검색된 정보를 바탕으로 내용을 일관되게 구성하거나 질문과
 연관된 사실을 유지하는 능력은 부족했음을 보여줍니다.
 
-## 6. 향후 실험 (예정)
-
-- LangChain RAG 마이그레이션 — Vanilla 버전과 구조/코드량/결과 비교
+## 6. LangChain RAG 마이그레이션
+ 
+Vanilla RAG와 같은 임베딩(`jhgan/ko-sroberta-multitask`, `rag/shared/`
+모듈 공유)으로 LangChain 버전을 구현했습니다.
+ 
+### FAISS segmentation fault 디버깅
+ 
+벡터스토어로 FAISS를 먼저 선택했습니다(Vanilla의 NumPy 코사인 유사도
+방식과 개념적으로 가장 가까워 비교에 적합하다고 판단). 인덱스 생성과
+저장까지는 정상 동작했으나, 검색(`similarity_search`) 호출 시
+**segmentation fault**로 프로세스가 죽는 문제가 발생했습니다.
+ 
+원인을 단계적으로 좁혔습니다.
+ 
+1. 인덱스 생성 — 정상
+2. 인덱스 저장 — 정상
+3. 인덱스 로드 — 정상
+4. 임베딩(쿼리 벡터) 생성 — 정상 (768차원 확인)
+5. `vectorstore.similarity_search()` — **segfault**
+6. `retriever.invoke()` (LangChain retriever 경로) — **segfault** (동일)
+7. LangChain을 완전히 우회하고 `vectorstore.index.search()`를 직접
+   호출 — **segfault** (동일 지점)
+마지막 단계에서 LangChain 코드를 전혀 거치지 않고도 동일한 segmentation
+fault가 재현되었습니다. 이를 통해 문제 원인을 LangChain 계층이 아닌
+FAISS 검색 단계 또는 그 주변의 런타임 환경(macOS ARM, Python 3.12,
+OpenMP 런타임 등) 수준까지 좁힐 수 있었습니다. 다만 그 안에서 정확한
+원인(faiss-cpu 자체의 문제인지, 특정 라이브러리 버전 조합 문제인지)은
+확정하지 못했습니다. macOS ARM 환경에서 `faiss-cpu`와 PyTorch가 각각
+다른 OpenMP 런타임을 로드해 충돌하는 사례가 보고되어 있어, 이를
+검증하기 위해 `KMP_DUPLICATE_LIB_OK=TRUE` 환경변수로 한 차례 더
+테스트했으나 동일하게 segfault가 발생해 이 가설은 기각했습니다.
+ 
+### 판단: Chroma로 전환
+ 
+원인을 LangChain 계층이 아닌 FAISS 검색 단계 수준까지는 좁혔으나, 이
+시점에서 더 깊이 파고드는 것(라이브러리 버전 조합 변경, 별도 환경
+구성 등)은 본래 목표(Vanilla RAG를 LangChain으로 마이그레이션해
+비교하는 것)에서 벗어난다고 판단했습니다. FAISS 대신 순수 Python
+구현인 Chroma로 전환했습니다 — C++ 바인딩 레벨 충돌 위험이 낮고,
+LangChain 통합도 동등하게 잘 지원됩니다. 벡터스토어 교체는
+`rag/langchain/vectorstore.py` 한 파일, 함수 하나 안에서의 변경으로
+끝났습니다.
+ 
+이 디버깅에서 얻은 것은 "끝까지 원인을 좁히는 것"과 "그 다음 어디서
+멈추고 우회할지 판단하는 것"이 별개의 능력이라는 점입니다.
+ 
+### Chroma 거리 측정 기본값 문제
+ 
+Chroma로 전환한 뒤, 같은 질문("세종대왕은 누구야?")으로 검색했는데
+Vanilla(NumPy 코사인 유사도)와 전혀 다른 결과가 나왔습니다. Vanilla는
+한글 창제 관련 청크를 score 0.48로 1위로 찾았는데, Chroma는 관련
+없는 인물 출생/사망 날짜 목록을 반환했습니다.
+ 
+같은 임베딩 모델, 같은 코퍼스, 같은 질문인데도 검색 결과가 달랐던
+원인은 임베딩이 아니라 **벡터스토어의 기본 거리 함수**였습니다.
+`vectorstore._collection.metadata`를 확인하니 `None`이 나왔는데,
+이는 거리 측정 방식이 명시적으로 설정되지 않아 Chroma가 기본값(L2
+유클리드 거리)을 쓰고 있었다는 뜻이었습니다. Vanilla는 코사인
+유사도를 직접 계산했으니, 둘이 "가장 가까운" 청크를 다른 기준으로
+판단하고 있었던 것입니다.
+ 
+```python
+# 기본값(L2)이 아니라 코사인 유사도를 명시적으로 지정
+vectorstore = Chroma.from_documents(
+    documents, embeddings,
+    persist_directory=VECTORSTORE_DIR,
+    collection_metadata={"hnsw:space": "cosine"},
+)
+```
+ 
+이 설정을 추가하고 인덱스를 재구축하자, Vanilla와 1~3위 검색 결과가
+정확히 일치했습니다. `Chroma.from_documents(...)`만 쓰고 거리 함수를
+별도로 확인하지 않으면 이런 차이를 놓치기 쉽다는 것을 직접 겪은
+사례입니다.
+ 
+### LLM 래퍼와 Chain 구성
+ 
+LangChain의 `LLM` 베이스 클래스를 상속해 우리가 직접 만든 GPTMini
+모델(23M, PyTorch)을 LangChain 인터페이스로 감싼 래퍼
+(`rag/langchain/llm_wrapper.py`)를 만들고, LCEL(`retriever |
+format_docs`, `RunnablePassthrough`)로 검색·프롬프트 조립·생성을
+하나의 체인(`rag/langchain/chain.py`)으로 엮었습니다.
+ 
+같은 질문으로 실행한 결과는 Vanilla와 거의 동일한 패턴을 보였습니다.
+"세종", "세종대왕", "세종대학교" 등 관련 키워드는 반복되지만 의미
+있는 문장으로는 이어지지 않았습니다(`세종대왕는 조선 초기부터, 조선
+세종대왕제, 세종대학교의 세종대학교의 세종대학교의 전신으로...`).
+구현 방식(직접 구현 vs LangChain)과 무관하게 23M 모델의 생성
+한계가 동일하게 나타난 것입니다.
+ 
+### Vanilla vs LangChain 비교
+ 
+| 비교 축 | Vanilla | LangChain |
+|---|---|---|
+| 코드량 | retriever.py + pipeline.py, 함수 단위로 직접 구현 | vectorstore.py + llm_wrapper.py + chain.py, 컴포넌트 조합 |
+| 개념적 학습 비용 | NumPy 코사인 유사도 계산 — 수식 그대로 코드로 옮김 | LCEL(`\|` 연산자), `RunnablePassthrough` 등 LangChain 고유 문법 학습 필요 |
+| 디버깅 가능성 | 검색 점수, 거리 계산까지 매 단계가 코드에 그대로 드러남 | Retriever→VectorStore→Embeddings→Chain으로 여러 계층이 추상화되어, 결과가 다를 때 원인을 한 계층씩 벗겨봐야 함(Chroma 거리 함수 문제가 그 예) |
+| 설정의 명시성 | `cosine_similarity(...)`처럼 동작이 코드에 명시적으로 드러남 | `Chroma.from_documents(...)`의 기본값(L2)에 의존하면 의도와 다른 동작이 조용히 발생할 수 있음 |
+| 확장성 | 모델/벡터DB를 바꾸려면 해당 함수를 직접 다시 작성 | LLM이나 벡터스토어 교체가 설정 변경에 가까움(다만 우리 모델처럼 LangChain이 기본 지원하지 않는 모델은 래퍼 작성이 필요) |
+| 버그 발생 | 없음 | FAISS segmentation fault(환경 문제), Chroma 거리 함수 기본값(설정 누락) 두 차례 발생 |
+ 
+Vanilla와 LangChain은 구현 방식과 추상화 수준은 달랐지만, 동일한
+임베딩·코퍼스·생성 모델을 사용했을 때 검색 결과와 최종 생성 품질은
+본질적으로 동일했습니다. 이번 실험을 통해 RAG 품질을 결정하는 요소를
+검색기(retriever), 프레임워크(LangChain), 생성 모델(LLM)로 분리해
+볼 수 있었고, 현재 프로젝트에서는 생성 모델의 표현 능력이 가장 큰
+병목임을 다시 한 번 확인했습니다.
+ 
+## 7. 향후 실험 (예정)
+ 
 - LangSmith Tracing 및 Dataset 기반 평가
 - (가능하다면) 더 큰 사전학습 LLM을 생성 엔진으로 사용했을 때 RAG 결과
   비교 — 검색 vs 생성 능력의 기여도를 더 명확히 분리하기 위함
-
 (이 섹션은 각 단계가 진행되면서 계속 갱신됩니다.)
+ 
