@@ -18,7 +18,11 @@ GPT 스타일 Decoder Transformer 기반 챗봇입니다. PyTorch로 Transformer
 - Vanilla RAG와 LangChain RAG를 같은 임베딩·코퍼스로 구현해 동일 조건 비교
 - FAISS segmentation fault, Chroma 거리 함수 설정 등 라이브러리 레벨
   이슈를 단계적으로 디버깅
-- RAG 실험을 통해 검색기와 생성 모델의 기여도를 분리 분석
+- 검색기와 생성 모델의 역할을 분리해, 생성 모델의 표현력이 RAG 품질의
+  핵심 병목임을 실험으로 확인
+- Built an evaluation pipeline (LLM-as-a-Judge) to quantitatively
+  compare responses from a custom 23M GPT, Gemma 8B, and Gemini 2.5
+  Flash under the same RAG retrieval pipeline
 - FastAPI 기반 추론 서버 (모델 2종 선택 서빙)
 
 ## Current Status
@@ -31,6 +35,7 @@ GPT 스타일 Decoder Transformer 기반 챗봇입니다. PyTorch로 Transformer
 - [x] Vanilla RAG 구현 (검색-생성 파이프라인 동작 확인, 생성 품질은 한계 확인)
 - [x] LangChain RAG 마이그레이션 (FAISS→Chroma 전환, 거리 함수 이슈
   해결, Vanilla와 동등한 검색·생성 결과 확인)
+- [x] 엘라/Gemma/Gemini 3모델 정량 평가 (평가셋 v1, Judge 채점 완료)
 - [ ] 진행 중: LangSmith Tracing 및 평가
 
 ## 데모
@@ -202,6 +207,7 @@ Temperature / Top-k 샘플링 → 다음 토큰 선택 → 반복(autoregressive
 | Loss Masking | 3.59 | 응답 생성에 학습 신호 집중, 더 적은 데이터로 빠른 개선 경향 (실험용 체크포인트) |
 | Vanilla RAG | - | 검색 결과가 생성에 반영됨을 확인. 다만 생성 모델 한계로 안정적인 QA 응답 생성에는 미달 |
 | LangChain RAG | - | Vanilla와 동일한 임베딩/코퍼스/생성 모델 사용 시 검색·생성 결과가 본질적으로 동일함을 확인 (프레임워크 차이가 생성 품질을 바꾸지 않음) |
+| 엘라 vs Gemma vs Gemini (평가셋 v1, Judge: Gemini, 5점 만점) | 엘라 1.23 / Gemma 4.57 / Gemini 4.00 | 동일한 검색기로 10문항 평가, 생성 모델만 변경. 검색 실패 시(Q10) 엘라는 무관한 내용을 생성했으나 Gemma·Gemini는 정보 부족을 인지하고 답변을 거부(hallucination 회피) |
 
 > Loss는 학습 방식·데이터 규모가 서로 달라 절대값으로 모델 우열을 가릴 수
 > 없습니다(예: Dialog v1의 낮은 loss는 더 쉬운 1턴 과제를 풀었기 때문). 자세한
@@ -229,9 +235,20 @@ Temperature / Top-k 샘플링 → 다음 토큰 선택 → 반복(autoregressive
    문제를 차례로 디버깅해 해결. 최종적으로 Vanilla와 검색·생성 결과가
    본질적으로 동일함을 확인해, 생성 모델의 표현력이 RAG 품질의 핵심
    병목이라는 결론을 프레임워크와 무관하게 재검증
+7. **엘라 vs Gemma vs Gemini 정량 평가** — 평가셋 v1(질문 10개 +
+   모범답안)을 만들어 동일한 Retriever와 코퍼스로 세 모델(엘라 23M,
+   Gemma 8B, Gemini 2.5 Flash)의 응답을 수집하고(엘라는 컨텍스트
+   제약으로 top_k=1, Gemma/Gemini는 top_k=3), LLM-as-a-Judge 방식으로
+   Gemini를 Judge로 사용해 정확성·관련성·자연스러움 세 기준으로
+   채점. 결과는 엘라 1.23 / Gemma 4.57 / Gemini 4.00(5점 만점)으로,
+   검색기는 같아도 생성 모델에 따라 결과가 크게 달라진다는 것을
+   숫자로 확인. 검색 실패 사례(Q10)에서는 엘라가 hallucination을
+   일으킨 반면 Gemma·Gemini는 정직하게 답변을 거부함
 
 각 단계의 상세 결과(loss 곡선, epoch별 생성 샘플, 코드, 디버깅 과정)는
-[`docs/training_log.md`](docs/training_log.md)에 기록되어 있습니다.
+[`docs/training_log.md`](docs/training_log.md)에, 3모델 비교 실험은
+[`docs/evaluation_v1_comparison.md`](docs/evaluation_v1_comparison.md)에
+기록되어 있습니다.
 
 ## 프로젝트 구조
 
@@ -277,7 +294,7 @@ uvicorn api.main:app --reload
 - [x] 데이터 파싱 버그 수정 및 재학습 — 멀티턴 대화 복구, 화자 전환 응답 패턴 확인
 - [x] Loss masking 적용 — 응답 생성에 학습 신호 집중 (체크포인트로 보존,
   현재 서빙 모델에는 미적용)
-- [x] Vanilla RAG 구현 (`rag/vanilla/`) — 청킹, 임베딩, 검색, 프롬프트
+- [x] Vanilla RAG 직접 구현 (`rag/vanilla/`) — 청킹, 임베딩, 검색, 프롬프트
   조립까지 전 단계를 라이브러리 없이 구현. 검색-생성 파이프라인 동작 확인,
   생성 모델 표현력이 RAG 품질의 핵심 병목임을 확인
 - [ ] FastAPI에 Vanilla RAG 연결
