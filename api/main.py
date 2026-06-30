@@ -9,6 +9,7 @@ from config.config import (
 from tokenizer.tokenizer import KoreanTokenizer
 from model.transformer import GPTMini
 from inference.generate import generate
+from rag.langchain.chain import build_rag_chain
 
 import torch
 
@@ -39,6 +40,12 @@ for name, cfg in MODELS.items():
 
 print(f"로드된 모델: {list(loaded_models.keys())}")
 
+# ── RAG 체인도 앱 시작 시 한 번만 빌드 ──
+# 매 요청마다 vectorstore를 새로 로드하지 않도록 모듈 레벨에서 한 번만 생성
+rag_chain = build_rag_chain(model_key="wiki", top_k=1)
+
+print("RAG 체인 빌드 완료")
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -48,6 +55,15 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     model_used: str
+
+
+class RagChatRequest(BaseModel):
+    message: str
+
+
+class RagChatResponse(BaseModel):
+    answer: str
+    model_used: str = "wiki+rag"
 
 
 @app.post("/chat", response_model=ChatResponse)
@@ -67,3 +83,19 @@ def chat(request: ChatRequest):
         device=device,
     )
     return ChatResponse(answer=answer, model_used=request.model)
+
+
+@app.post("/rag-chat", response_model=RagChatResponse)
+def rag_chat(request: RagChatRequest):
+    """검색(Retriever) -> 프롬프트 조립 -> KoreanGPTWrapper 생성까지
+    LangChain RAG 체인을 그대로 거쳐 응답을 생성하는 엔드포인트.
+
+    /chat과 달리 RAG가 적용되어, 질문과 관련된 위키 문서를 검색해
+    컨텍스트로 함께 넣은 뒤 생성한다 (docs/training_log.md 5~6절 참고).
+    """
+    try:
+        answer = rag_chain.invoke(request.message)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RAG 체인 실행 중 오류: {e}")
+
+    return RagChatResponse(answer=answer)
