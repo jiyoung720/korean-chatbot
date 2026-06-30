@@ -20,13 +20,14 @@ GPT 스타일 Decoder Transformer 기반 챗봇입니다. PyTorch로 Transformer
   이슈를 단계적으로 디버깅
 - 검색기와 생성 모델의 역할을 분리해, 생성 모델의 표현력이 RAG 품질의
   핵심 병목임을 실험으로 확인
-- Built an evaluation pipeline (LLM-as-a-Judge) to quantitatively
-  compare responses from a custom 23M GPT, Gemma 8B, and Gemini 2.5
-  Flash under the same RAG retrieval pipeline
+- Built an LLM-as-a-Judge evaluation pipeline to quantitatively compare a custom 23M GPT, Gemma 8B, and Gemini 2.5 Flash under the same RAG retrieval pipeline
+- Analyzed how different generation models respond to retrieval failure under the same RAG pipeline, highlighting hallucination and abstention behaviors
+- Traced Retriever, prompt assembly, and a custom KoreanGPTWrapper with LangSmith
 - FastAPI 기반 추론 서버 (모델 2종 선택 서빙)
 
-## Current Status
 
+## Current Status
+ 
 - [x] GPT-style Decoder Transformer 구현
 - [x] 위키백과 데이터로 파이프라인 검증
 - [x] AI Hub 대화 데이터 재학습
@@ -36,7 +37,7 @@ GPT 스타일 Decoder Transformer 기반 챗봇입니다. PyTorch로 Transformer
 - [x] LangChain RAG 마이그레이션 (FAISS→Chroma 전환, 거리 함수 이슈
   해결, Vanilla와 동등한 검색·생성 결과 확인)
 - [x] 엘라/Gemma/Gemini 3모델 정량 평가 (평가셋 v1, Judge 채점 완료)
-- [ ] 진행 중: LangSmith Tracing 및 평가
+- [x] LangSmith Tracing 적용 (기존 LangChain 체인을 코드 변경 없이 추적)
 
 ## 데모
 
@@ -212,6 +213,9 @@ Temperature / Top-k 샘플링 → 다음 토큰 선택 → 반복(autoregressive
 > Loss는 학습 방식·데이터 규모가 서로 달라 절대값으로 모델 우열을 가릴 수
 > 없습니다(예: Dialog v1의 낮은 loss는 더 쉬운 1턴 과제를 풀었기 때문). 자세한
 > 비교와 근거는 아래 실험 과정과 [`docs/training_log.md`](docs/training_log.md)를 참고하세요.
+>
+> 이 결과는 Evaluation v1의 검색 실패 사례(Q10)에서 관찰된 결과이며,
+> 더 다양한 검색 실패 사례를 포함한 후속 평가가 필요합니다.
 
 ## 주요 실험 과정 (요약)
 
@@ -285,11 +289,11 @@ uvicorn api.main:app --reload
 ```
 
 ## 향후 계획
-
+ 
 현재 구현은 1단계이며, 다음 항목들을 단계적으로 추가할 예정입니다. 구조상 RAG 추가 시
 `inference/`와 신규 `rag/` 모듈만 영향을 받도록 설계했습니다. RAG는 부트캠프 과제
 요구사항에 따라 Vanilla 구현 후 LangChain으로 마이그레이션하는 순서로 진행합니다.
-
+ 
 - [x] AI Hub 대화 데이터로 재학습 (화자 토큰, `<eot>` 도입)
 - [x] 데이터 파싱 버그 수정 및 재학습 — 멀티턴 대화 복구, 화자 전환 응답 패턴 확인
 - [x] Loss masking 적용 — 응답 생성에 학습 신호 집중 (체크포인트로 보존,
@@ -302,7 +306,10 @@ uvicorn api.main:app --reload
   데이터를 공유해 Vanilla 버전과 구조/코드량/결과 비교. FAISS→Chroma
   전환, 거리 함수 이슈 해결 과정을 포함해 비교 항목에 디버깅
   가능성·설정 명시성을 추가
-- [ ] LangSmith로 체인 실행 Tracing 및 Dataset 기반 평가
+- [x] LangSmith로 체인 실행 Tracing 적용 (Dataset 기반 평가는 선택
+  사항으로 보류 — `docs/mentoring_notes.md` 기준)
+- [ ] LangSmith Dataset Evaluation
+- [ ] RAGAS 기반 자동 평가
 - [ ] 벡터DB 연동 (FAISS/Chroma)
 - [ ] 대화 히스토리 저장, 세션 관리
 - [ ] 모델 교체 가능한 추상화 계층 (`BaseLanguageModel`)
