@@ -10,20 +10,33 @@ GPT 스타일 Decoder Transformer 기반 챗봇입니다. PyTorch로 Transformer
 ## Highlights
 
 - GPT-style Decoder Transformer를 PyTorch로 직접 구현 (self-attention, causal mask 포함)
-- 한국어 SentencePiece 토크나이저 학습 (vocab 16,000, 화자/마스킹 특수 토큰 포함)
-- AI Hub 일상 대화 데이터 87,689건 전처리 및 학습
 - 데이터 파싱 버그 발견 및 수정 — 멀티턴 대화 복구로 학습 데이터 6배 증가
-- 화자(`<sp1>`~`<sp5>`) 전환을 반영한 멀티턴 대화 생성 확인
-- Loss masking으로 응답 생성에 학습 신호 집중, 학습 효율 개선 시도
 - Vanilla RAG와 LangChain RAG를 같은 임베딩·코퍼스로 구현해 동일 조건 비교
-- FAISS segmentation fault, Chroma 거리 함수 설정 등 라이브러리 레벨
-  이슈를 단계적으로 디버깅
-- 검색기와 생성 모델의 역할을 분리해, 생성 모델의 표현력이 RAG 품질의
-  핵심 병목임을 실험으로 확인
+- FAISS segmentation fault, Chroma 거리 함수 설정 등 라이브러리 레벨 이슈를 단계적으로 디버깅
+- 검색기와 생성 모델의 역할을 분리해, 생성 모델의 표현력이 RAG 품질의 핵심 병목임을 실험으로 확인
 - Built an LLM-as-a-Judge evaluation pipeline to quantitatively compare a custom 23M GPT, Gemma 8B, and Gemini 2.5 Flash under the same RAG retrieval pipeline
-- Analyzed how different generation models respond to retrieval failure under the same RAG pipeline, highlighting hallucination and abstention behaviors
-- Traced Retriever, prompt assembly, and a custom KoreanGPTWrapper with LangSmith
-- FastAPI 기반 추론 서버 (모델 2종 선택 서빙)
+- Analyzed how different generation models respond to retrieval failure, highlighting hallucination and abstention behaviors
+- Registered the evaluation set as a LangSmith Dataset and ran LangSmith Evaluation + RAGAS against the deployed RAG chain, reproducing the LLM-as-a-Judge findings with two independent evaluation tools
+- FastAPI 기반 추론 서버 (모델 2종 선택 서빙 + RAG 적용 엔드포인트)
+
+## Architecture Overview
+
+```mermaid
+flowchart TD
+    User([User]) --> API[FastAPI]
+    API --> Chain[LangChain RAG Chain]
+    Chain --> Retriever[Retriever - Chroma]
+    Retriever --> Prompt[Prompt Assembly]
+    Prompt --> Wrapper[KoreanGPTWrapper]
+    Wrapper --> Model[GPT Model - 23M, PyTorch]
+    Model --> Answer([Generated Answer])
+
+    Chain -.trace.-> LangSmith[(LangSmith)]
+    Chain -.eval.-> RAGAS[(RAGAS)]
+```
+
+`POST /chat`은 위 흐름에서 Retriever/Prompt 단계 없이 GPT Model로 바로
+연결되고, `POST /rag-chat`이 이 전체 체인을 사용합니다.
 
 
 ## Current Status
@@ -38,6 +51,9 @@ GPT 스타일 Decoder Transformer 기반 챗봇입니다. PyTorch로 Transformer
   해결, Vanilla와 동등한 검색·생성 결과 확인)
 - [x] 엘라/Gemma/Gemini 3모델 정량 평가 (평가셋 v1, Judge 채점 완료)
 - [x] LangSmith Tracing 적용 (기존 LangChain 체인을 코드 변경 없이 추적)
+- [x] FastAPI에 LangChain RAG 체인 연결 (`POST /rag-chat`)
+- [x] LangSmith Dataset 등록 및 Evaluation 실행
+- [x] RAGAS 평가 (Faithfulness / Context Precision / Context Recall / Answer Relevancy)
 
 ## 데모
 
@@ -82,6 +98,18 @@ curl -X POST http://127.0.0.1:8000/chat \
 
 `<sp1>`, `<sp2>` 화자가 번갈아 응답하며 대화 맥락이 이어지는 형태로 생성됩니다.
 
+### RAG 적용 (`POST /rag-chat`)
+
+```bash
+curl -X POST http://127.0.0.1:8000/rag-chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "세종대왕은 누구야?"}'
+```
+
+Wiki 모델(`model_key="wiki"`, `top_k=1`)에 LangChain RAG 체인을 연결한
+엔드포인트입니다. RAG 미적용 `/chat`과 별도로 제공하며, 두 엔드포인트는
+계층 관계가 아닌 독립된 기능입니다.
+
 ### RAG 적용 전후 비교
 
 같은 질문 "세종대왕은 누구야?"에 검색(RAG)을 붙였을 때와 안 붙였을 때의
@@ -96,6 +124,20 @@ curl -X POST http://127.0.0.1:8000/chat \
 23M 규모로 직접 학습한 생성 모델의 표현력 한계로 의미가 통하는 완성된
 문장에는 이르지 못했습니다. 자세한 내용은 아래 "RAG 실험" 섹션과
 [`docs/training_log.md`](docs/training_log.md)를 참고하세요.
+
+```mermaid
+flowchart LR
+    Q["Question<br/>세종대왕은 누구야?"] --> R[Retriever]
+    R --> C["Retrieved Context<br/>(한글 창제 관련 청크)"]
+    C --> G["Generated Answer"]
+```
+
+![LangSmith Trace](docs/langsmith_trace.png)
+
+`RunnableSequence`가 `map:key:context`(검색) → `format_docs` →
+`map:key:question`(주어 추출) → `KoreanGPTWrapper`(생성) 단계로 트리
+구조로 펼쳐져, 각 단계의 소요 시간과 중간 입출력을 실행 결과로 직접
+확인할 수 있습니다.
 
 ## 아키텍처
 
@@ -130,6 +172,9 @@ curl -X POST http://127.0.0.1:8000/chat \
 구조 자체)는 변경하지 않았습니다 — RAG는 "모델에 무엇을 입력으로 주는지"의
 문제이지, 모델 구조의 문제가 아니기 때문입니다. Vanilla(직접 구현)와
 LangChain(프레임워크) 두 버전을 같은 임베딩·코퍼스로 구현해 비교했습니다.
+LangChain 버전은 `POST /rag-chat`로 FastAPI에 연결되어 있으며, LangSmith로
+Tracing/Dataset/Evaluation을, RAGAS로 Retriever·생성 모델 분리 평가를
+수행합니다.
 
 ```
               사용자 질문
@@ -197,6 +242,8 @@ Temperature / Top-k 샘플링 → 다음 토큰 선택 → 반복(autoregressive
 | 대화 모델 학습 데이터 | AI Hub 일상 대화 87,689건 | 위키는 서술체라 대화체 응답에 한계가 있어, 승인된 AI Hub 데이터로 교체 학습 |
 | 학습 시퀀스 분할 | 겹치지 않는(non-overlapping) 청크 | 슬라이딩 윈도우 방식은 거의 동일한 샘플을 8M개 가까이 생성해 1 epoch에 25만 스텝이 필요했음. 같은 데이터로 998 스텝까지 축소 |
 | 디바이스 분리 | 학습은 Colab(GPU), 서빙은 로컬(CPU) | 학습은 GPU 연산량이 필요하지만 추론은 CPU로도 충분히 가능해, 비용/구조 모두에서 합리적 |
+| RAG 엔드포인트 네이밍 | `/rag-chat` (`/chat/rag` 대신) | `/chat`(RAG 없음)과 RAG 적용 버전은 계층 종속 관계가 아니라 독립된 기능이므로, 계층형 경로 대신 평행한 경로로 표현 |
+| RAGAS judge/embeddings | `ChatGoogleGenerativeAI` + `GoogleGenerativeAIEmbeddings` 명시 | RAGAS가 기본값으로 OpenAI 임베딩을 요구해 `OPENAI_API_KEY` 에러가 발생하므로, 프로젝트에서 이미 쓰던 Gemini로 명시적으로 대체 |
 
 ## 모델 비교 요약
 
@@ -209,45 +256,41 @@ Temperature / Top-k 샘플링 → 다음 토큰 선택 → 반복(autoregressive
 | Vanilla RAG | - | 검색 결과가 생성에 반영됨을 확인. 다만 생성 모델 한계로 안정적인 QA 응답 생성에는 미달 |
 | LangChain RAG | - | Vanilla와 동일한 임베딩/코퍼스/생성 모델 사용 시 검색·생성 결과가 본질적으로 동일함을 확인 (프레임워크 차이가 생성 품질을 바꾸지 않음) |
 | 엘라 vs Gemma vs Gemini (평가셋 v1, Judge: Gemini, 5점 만점) | 엘라 1.23 / Gemma 4.57 / Gemini 4.00 | 동일한 검색기로 10문항 평가, 생성 모델만 변경. 검색 실패 시(Q10) 엘라는 무관한 내용을 생성했으나 Gemma·Gemini는 정보 부족을 인지하고 답변을 거부(hallucination 회피) |
+| LangSmith Evaluation (엘라, `/rag-chat` 체인, Judge: Gemini) | accuracy/relevance/fluency 대부분 0~2점(5점 만점) | 평가셋 v1을 LangSmith Dataset으로 등록해 운영 도구 기준으로 재평가. LLM-as-a-Judge와 동일한 결론("생성 품질이 낮다")을 재현. Q10에서도 hallucination이 그대로 재현되어 0점 — 검색 실패에 대한 정보 부족 인지 능력이 애초에 없는 모델에는 해당 특례가 적용되지 않음 |
+| RAGAS (엘라, `/rag-chat` 체인) | Context Precision 1.000 / Context Recall 1.000 / Faithfulness 0.739 / Answer Relevancy 0.787 | Retriever와 생성 모델의 기여도를 분리해 측정. Retriever는 거의 완벽하나 생성 단계에서 품질이 떨어짐 — Vanilla RAG·LangSmith Evaluation과 동일한 결론을 정량 지표로 재확인 |
 
 > Loss는 학습 방식·데이터 규모가 서로 달라 절대값으로 모델 우열을 가릴 수
 > 없습니다(예: Dialog v1의 낮은 loss는 더 쉬운 1턴 과제를 풀었기 때문). 자세한
 > 비교와 근거는 아래 실험 과정과 [`docs/training_log.md`](docs/training_log.md)를 참고하세요.
 >
-> 이 결과는 Evaluation v1의 검색 실패 사례(Q10)에서 관찰된 결과이며,
-> 더 다양한 검색 실패 사례를 포함한 후속 평가가 필요합니다.
+> 이 결과는 Evaluation v1의 검색 실패 사례(Q10, 질문 표현이 주어 추출
+> 정규식과 맞지 않아 발생한 검색 쿼리 전처리 이슈)에서 관찰된 결과이며,
+> 더 다양한 검색 실패 사례를 포함한 후속 평가가 필요합니다. 또한 Gemini는
+> "모른다"고 답하도록 프롬프트에 명시적으로 지시한 반면 Gemma는 별도
+> 지시 없이 같은 대응을 보여, 완전히 동일한 조건의 비교는 아닙니다.
+>
+> LangSmith Evaluation과 RAGAS는 서로 다른 방식(LLM Judge 채점 vs
+> Retriever/생성 분리 지표)으로 접근했지만, 결국 같은 결론(검색보다
+> 생성 모델이 병목)을 가리켰습니다.
+
+![RAGAS Evaluation Results](docs/ragas_results.png)
+
+Retriever 지표(파랑)는 만점에 가깝고 생성 지표(주황)만 낮다는 것이
+한눈에 보입니다 — Vanilla RAG 실험(5절)부터 반복 관찰된 "검색은 잘
+되는데 생성이 약하다"는 결론이 그래프로도 드러납니다.
 
 ## 주요 실험 과정 (요약)
 
-1. **위키 모델 학습** — 한국어 위키백과로 전체 파이프라인(모델 구현 → 토크나이저
-   → 학습 → 생성 → FastAPI) 검증
-2. **AI Hub 대화 데이터 재학습 (v1)** — 화자 토큰(`<sp1>~<sp5>`), 대화 종료
-   토큰(`<eot>`) 도입. 화자 전환의 의미적 학습은 제한적이었음
-3. **데이터 파싱 버그 발견 및 재학습 (v2)** — `parse_dialog()`의 `return` 위치
-   버그로 대화가 거의 모두 1턴으로 잘려 있었음을 발견. 수정 후 코퍼스가 6배
-   증가했고, 같은 학습 방식으로도 화자 전환이 뚜렷하게 개선됨
-4. **Loss Masking 실험** — 이전 턴은 loss에서 제외하고 다음 턴 생성에만
-   학습 신호를 집중. 적은 데이터로도 더 빠르게 일관된 응답에 도달하는 경향을
-   확인했으나, 엄밀한 비교는 추후 과제로 남김
-5. **Vanilla RAG 구현** — 청킹·임베딩·검색·프롬프트 조립·생성을 라이브러리
-   없이 직접 구현. 검색 품질은 충분히 확보되었으나, 검색된 정보를 활용해
-   일관된 답변을 생성하는 단계에서 생성 모델의 한계가 더 크게 드러남.
-   이번 실험을 통해 RAG 성능은 검색기뿐 아니라 생성 모델의 능력에도
-   크게 의존한다는 점을 확인
-6. **LangChain RAG 마이그레이션** — 같은 임베딩·코퍼스로 LangChain
-   버전 구현. FAISS의 segmentation fault, Chroma의 거리 함수 기본값
-   문제를 차례로 디버깅해 해결. 최종적으로 Vanilla와 검색·생성 결과가
-   본질적으로 동일함을 확인해, 생성 모델의 표현력이 RAG 품질의 핵심
-   병목이라는 결론을 프레임워크와 무관하게 재검증
-7. **엘라 vs Gemma vs Gemini 정량 평가** — 평가셋 v1(질문 10개 +
-   모범답안)을 만들어 동일한 Retriever와 코퍼스로 세 모델(엘라 23M,
-   Gemma 8B, Gemini 2.5 Flash)의 응답을 수집하고(엘라는 컨텍스트
-   제약으로 top_k=1, Gemma/Gemini는 top_k=3), LLM-as-a-Judge 방식으로
-   Gemini를 Judge로 사용해 정확성·관련성·자연스러움 세 기준으로
-   채점. 결과는 엘라 1.23 / Gemma 4.57 / Gemini 4.00(5점 만점)으로,
-   검색기는 같아도 생성 모델에 따라 결과가 크게 달라진다는 것을
-   숫자로 확인. 검색 실패 사례(Q10)에서는 엘라가 hallucination을
-   일으킨 반면 Gemma·Gemini는 정직하게 답변을 거부함
+1. **위키 모델 학습** — 위키백과로 전체 파이프라인(모델 구현 → 토크나이저 → 학습 → 생성 → FastAPI) 검증
+2. **AI Hub 대화 데이터 재학습 (v1)** — 화자 토큰(`<sp1>~<sp5>`) 도입, 화자 전환의 의미적 학습은 제한적
+3. **데이터 파싱 버그 발견 및 재학습 (v2)** — `return` 위치 버그로 대화가 1턴으로 잘려있었음을 발견, 수정 후 코퍼스 6배 증가
+4. **Loss Masking 실험** — 다음 턴 생성에만 학습 신호 집중, 적은 데이터로도 빠르게 일관된 응답에 도달하는 경향 확인
+5. **Vanilla RAG 구현** — 청킹·임베딩·검색·프롬프트 조립·생성을 직접 구현, 검색은 정확했으나 생성 모델의 한계가 드러남
+6. **LangChain RAG 마이그레이션** — FAISS segfault, Chroma 거리 함수 문제를 디버깅해 해결, Vanilla와 결과가 본질적으로 동일함을 확인
+7. **엘라 vs Gemma vs Gemini 정량 평가** — 평가셋 v1(10문항)로 LLM-as-a-Judge 채점, 엘라 1.23 / Gemma 4.57 / Gemini 4.00(5점 만점)
+8. **LangSmith Tracing 적용** — 기존 체인을 코드 변경 없이 환경변수만으로 Tracing, 단계별 소요 시간과 중간 입출력 확인
+9. **LangSmith Dataset / Evaluation** — 평가셋 v1을 Dataset으로 등록해 운영 도구 기준으로 재평가, LLM-as-a-Judge와 동일한 결론 재현
+10. **RAGAS 평가** — Context Precision/Recall, Faithfulness, Answer Relevancy로 Retriever·생성 모델 기여도 분리, 같은 결론을 정량 지표로 재확인
 
 각 단계의 상세 결과(loss 곡선, epoch별 생성 샘플, 코드, 디버깅 과정)는
 [`docs/training_log.md`](docs/training_log.md)에, 3모델 비교 실험은
@@ -258,13 +301,14 @@ Temperature / Top-k 샘플링 → 다음 토큰 선택 → 반복(autoregressive
 
 ```
 korean-chatbot/
-├── api/             # FastAPI 라우터 (POST /chat)
+├── api/             # FastAPI 라우터 (POST /chat, POST /rag-chat)
 ├── config/          # 하이퍼파라미터, 경로 등 설정값
 ├── data/            # 원본/전처리 텍스트 데이터 (git 비추적)
 ├── tokenizer/        # SentencePiece 로딩/인코딩 래퍼
 ├── model/           # GPT 스타일 Decoder Transformer 구조 정의
 ├── inference/        # 반복 생성 로직 (temperature/top-k/EOS)
 ├── train/           # Colab에서 실행하는 학습 스크립트
+├── rag/             # Vanilla/LangChain RAG 파이프라인, 평가 스크립트
 ├── artifacts/        # 학습된 가중치(.pt), 토크나이저 파일 (git 비추적)
 ├── tests/
 ├── docs/             # 학습 결과 그래프, training_log.md 등 문서 자료
@@ -288,6 +332,10 @@ uv pip install -r requirements.txt
 uvicorn api.main:app --reload
 ```
 
+RAG 평가 스크립트(`rag/langchain/build_dataset.py`,
+`run_evaluation.py`, `evaluate_ragas.py`)를 실행하려면 `.env`에
+`GEMINI_API_KEY`, `LANGCHAIN_API_KEY`가 필요합니다.
+
 ## 향후 계획
  
 현재 구현은 1단계이며, 다음 항목들을 단계적으로 추가할 예정입니다. 구조상 RAG 추가 시
@@ -301,20 +349,24 @@ uvicorn api.main:app --reload
 - [x] Vanilla RAG 직접 구현 (`rag/vanilla/`) — 청킹, 임베딩, 검색, 프롬프트
   조립까지 전 단계를 라이브러리 없이 구현. 검색-생성 파이프라인 동작 확인,
   생성 모델 표현력이 RAG 품질의 핵심 병목임을 확인
-- [ ] FastAPI에 Vanilla RAG 연결
+- [x] FastAPI에 LangChain RAG 연결 (`POST /rag-chat`)
 - [x] LangChain 기반 RAG로 마이그레이션 (`rag/langchain/`) — 같은 임베딩·
   데이터를 공유해 Vanilla 버전과 구조/코드량/결과 비교. FAISS→Chroma
   전환, 거리 함수 이슈 해결 과정을 포함해 비교 항목에 디버깅
   가능성·설정 명시성을 추가
-- [x] LangSmith로 체인 실행 Tracing 적용 (Dataset 기반 평가는 선택
-  사항으로 보류 — `docs/mentoring_notes.md` 기준)
-- [ ] LangSmith Dataset Evaluation
-- [ ] RAGAS 기반 자동 평가
-- [ ] 벡터DB 연동 (FAISS/Chroma)
+- [x] LangSmith로 체인 실행 Tracing 적용
+- [x] LangSmith Dataset 등록 및 Evaluation 실행
+- [x] RAGAS 기반 자동 평가 (Faithfulness / Context Precision / Context
+  Recall / Answer Relevancy)
+- [ ] GitHub Release v1.0
+- [ ] AI Interview Coach 프로젝트 시작 (별도 Repository — Gemini +
+  LangChain + RAG + RAGAS 기반 미니 프로젝트)
+- [ ] 벡터DB 연동 (FAISS/Chroma) — 위 RAG 실험을 실제 서비스 구조로 확장
 - [ ] 대화 히스토리 저장, 세션 관리
 - [ ] 모델 교체 가능한 추상화 계층 (`BaseLanguageModel`)
 - [ ] Docker 기반 배포
 
 ## 기술 스택
 
-Python 3.12 · PyTorch · SentencePiece · FastAPI · Uvicorn · Pydantic
+Python 3.12 · PyTorch · SentencePiece · FastAPI · Uvicorn · Pydantic ·
+LangChain · Chroma · LangSmith · RAGAS · Gemini API
