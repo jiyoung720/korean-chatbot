@@ -416,12 +416,138 @@ export LANGCHAIN_PROJECT="korean-chatbot-rag"
 실행하는 대신, 이미 실행된 trace를 클릭해서 어느 단계든 들여다볼 수
 있습니다.
 
-## 8. 향후 실험 (예정)
-
-- LangSmith Dataset 기반 평가 (선택 — 멘토링 기준상 필수는 아님,
-  다만 `docs/evaluation_dataset_v1.md`를 그대로 Dataset으로 등록하면
-  쉽게 시도 가능)
+## 8. LangSmith Dataset 생성
+ 
+LangChain RAG 체인을 FastAPI(`/rag-chat`)에 연결한 뒤, 
+`docs/evaluation_dataset_v1.md`의 10문항을 LangSmith Dataset으로 등록했습니다.
+ 
+### 엔드포인트 네이밍
+ 
+`/chat/rag`와 `/rag-chat`을 비교했으며, 두 엔드포인트(RAG 없음/있음)가
+계층 관계가 아니라 독립적인 기능이라는 점을 고려해 `/rag-chat`을
+선택했습니다.
+ 
+### Q10 메타데이터 설계
+ 
+`evaluation_v1_results_ella.md`(위 5절)에서 이미 확인했듯, Q10
+("세종대왕은 어떤 업적으로 유명한가?")은 주어 추출 정규식이
+"어떤 ~로 유명한가" 패턴을 처리하지 못해 검색이 실패하는 케이스입니다.
+Dataset에서 이 문항을 제외할지 고민했으나, 검색 실패에 대한 세
+모델(엘라/Gemma/Gemini)의 대응 차이 자체가 의미 있는 평가 결과이므로
+포함하되 메타데이터로 표시하기로 했습니다.
+ 
+```python
+{
+    "question": "세종대왕은 어떤 업적으로 유명한가?",
+    "expected_answer": "1443년 한글(훈민정음)을 창제하기 시작하여 1446년 반포했다.",
+    "known_retrieval_issue": True,
+    "note": "주어 추출 정규식이 '어떤 ~로 유명한가' 패턴을 처리하지 못해 검색 실패..."
+}
+```
+ 
+재실행해도 중복 등록되지 않도록, Dataset과 example 존재 여부를 먼저
+조회한 뒤 없는 것만 추가하는 방식으로 스크립트를 작성했습니다.
+ 
+## 9. LangSmith Evaluation
+ 
+`rag/langchain/run_evaluation.py`로 `/rag-chat`과 동일한 체인을
+평가 대상으로 삼아 LangSmith Evaluation을 실행했습니다.
+ 
+### Judge 설계
+ 
+`evaluation_dataset_v1.md`에 이미 정의된 정확성/질문 관련성/자연스러움
+3축을 그대로 Gemini 2.5 Flash judge 프롬프트로 사용했습니다. Q10처럼
+검색 실패가 알려진 문항에는 "정보 부족을 솔직히 인정하면
+정확성 만점" 특례를 프롬프트에 동적으로 주입하도록 설계했습니다.
+ 
+### 특례가 발동하지 않은 이유
+ 
+Q10 평가 결과, accuracy/relevance/fluency 모두 0점이 나왔습니다.
+처음엔 특례가 제대로 작동하지 않은 버그로 의심했으나, Input/Output을
+직접 확인한 결과 정확한 채점이었습니다. 엘라는 검색 실패 시 "모른다"고
+답하는 능력이 없어 무관한 내용을 그대로 생성(hallucination)했고,
+judge는 그것을 정확히 "무관한 인물 목록 + 비문법적"이라고 지적했습니다.
+특례 조항은 정보 부족을 솔직히 인정하는 모델(Gemma, Gemini)에만
+해당하는 것이었고, 엘라 평가에서는 애초에 트리거될 상황이 아니었습니다.
+ 
+### 기술적 이슈
+ 
+`google.generativeai` 패키지가 deprecated라는 FutureWarning이 발생해,
+신규 `google.genai` SDK(`genai.Client().models.generate_content(...)`)로
+즉시 마이그레이션했습니다. 또한 API 키를 매번 `export`해야 하는 불편을
+없애기 위해 `python-dotenv` + `.env`(`.gitignore`에 추가)로 전환했습니다.
+ 
+### 결과
+ 
+10개 문항 모두 채점 완료. 점수 분포는 0~2점대가 대부분으로,
+`evaluation_v1_results_ella.md`(5절)의 결론("9개 중 완전 성공 없음,
+부분 성공 3건")과 일치했습니다. LLM-as-a-Judge(정성적 판단)로 얻은
+결론이 LangSmith Evaluation(운영 도구)에서도 동일하게 재현된 것입니다.
+ 
+## 10. RAGAS 평가
+ 
+Retriever와 생성 모델의 기여도를 분리해서 정량화하기 위해 RAGAS
+(Faithfulness / Context Precision / Context Recall / Answer Relevancy)를
+도입했습니다(`rag/langchain/evaluate_ragas.py`).
+ 
+### 의존성 버그: langchain-community 버전 호환성
+ 
+```
+ModuleNotFoundError: No module named 'langchain_community.chat_models.vertexai'
+```
+ 
+`langchain-community==0.4.2`에서 `chat_models.vertexai` 서브모듈이
+삭제되었는데, `ragas==0.4.3`(최신 버전) 내부 코드가 여전히 이 경로를
+import하고 있어 발생하는, ragas 쪽의 알려진 버그였습니다. `sys.modules`에
+가짜 모듈을 주입해 import를 우회하는 방법도 검토했으나, 유지보수성과
+코드 명확성을 고려해 채택하지 않았습니다.
+ 
+대신 GitHub Issue/PR을 확인해 원인을 확정한 뒤, 로컬 가상환경에서만
+`langchain-community<0.4.2`(0.4.1로 다운그레이드)를 적용했습니다.
+프로젝트 전체 의존성(requirements/pyproject)에는 반영하지 않았고,
+LangChain RAG·Chroma·LangSmith 등 다른 부분은 최신 버전을 그대로
+유지합니다. RAGAS 하나 때문에 핵심 의존성 전체를 낮게 고정하면
+"LangChain RAG는 최신, RAGAS는 구버전 대응" 상태가 프로젝트에 영구히
+남기 때문입니다.
+ 
+judge LLM도 `google.generativeai.GenerativeModel`을 그대로
+넘기면 안 되고, RAGAS가 기대하는 `BaseChatModel` 인터페이스에 맞춰
+`ChatGoogleGenerativeAI`로 감싸야 했습니다. 같은 이유로
+`context_precision`/`answer_relevancy` 계산에 필요한 임베딩도
+명시하지 않으면 RAGAS가 기본값으로 OpenAI 임베딩을 요구해
+`OPENAI_API_KEY` 에러가 났습니다. Gemini 임베딩(`GoogleGenerativeAIEmbeddings`,
+`models/gemini-embedding-001`)을 명시적으로 지정해 해결했습니다.
+ 
+### 코드 정리
+ 
+- vectorstore/rag_chain을 모듈 레벨에서 한 번만 생성하도록 변경
+  (기존에는 10문항마다 매번 재로드하고 있었음)
+- `results`(RAGAS의 `EvaluationResult` 객체)는 `json.dump()`로 바로
+  직렬화되지 않아 `to_pandas()`로 변환한 뒤 CSV/JSON 둘 다 저장
+### 결과
+ 
+| 메트릭 | 점수 |
+|---|---|
+| Context Precision | 1.000 |
+| Context Recall | 1.000 |
+| Faithfulness | 0.739 |
+| Answer Relevancy | 0.787 |
+ 
+Retriever 성능(precision/recall)은 거의 완벽한 반면, 생성 단계
+(faithfulness/answer_relevancy)에서 점수가 떨어졌습니다. 이는
+5절(Vanilla RAG), 9절(LangSmith Evaluation)에서 이미 확인한 "검색은
+잘 되는데 생성이 약하다"는 결론을, RAGAS가 Retriever와 생성 모델을
+분리한 지표로 다시 한번 정량적으로 재확인해준 것입니다.
+ 
+LangSmith Evaluation은 생성된 답변의 품질을 LLM Judge로 평가했고,
+RAGAS는 검색과 생성을 각각 분리해 측정했습니다. 서로 다른 방식과
+관점으로 접근한 두 평가가 결국 같은 결론(검색보다 생성 모델이 병목)을
+가리켰다는 점이 이번 평가 단계에서 가장 확실히 얻은 소득이었습니다.
+ 
+## 11. 향후 실험 (예정)
+ 
+- README 최종 업데이트 (LangSmith Evaluation, RAGAS 결과 반영)
+- GitHub Release v1.0
 - (가능하다면) 더 큰 사전학습 LLM을 생성 엔진으로 사용했을 때 RAG 결과
   비교 — 검색 vs 생성 능력의 기여도를 더 명확히 분리하기 위함
-
 (이 섹션은 각 단계가 진행되면서 계속 갱신됩니다.)
