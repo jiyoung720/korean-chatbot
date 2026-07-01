@@ -11,6 +11,8 @@ evaluation_dataset_v1.md의 10문항을 LangSmith Dataset으로 등록하는 스
       예제를 추가합니다 (client.create_dataset이 멱등은 아니므로,
       재실행 시 중복 등록을 막기 위해 존재 여부를 먼저 확인합니다).
 """
+from dotenv import load_dotenv
+load_dotenv()
 
 from langsmith import Client
 
